@@ -22,16 +22,25 @@ use Pimcore\Model;
  *
  * @property \Pimcore\Model\Metadata\Predefined $model
  */
-class Dao extends Model\Dao\PhpArrayTable
+class Dao extends Model\Dao\PimcoreLocationAwareConfigDao
 {
+    use Model\Dao\AutoIncrementTrait;
+
     public function configure()
     {
-        parent::configure();
-        $this->setFile('predefined-asset-metadata');
+        $config = \Pimcore::getContainer()->getParameter("pimcore.config");
+
+        parent::configure([
+            'containerConfig' => $config['metadata']['predefined']['definitions'] ?? [],
+            'settingsStoreScope' => 'pimcore_predefined_asset_metadata',
+            'storageDirectory' => PIMCORE_CONFIGURATION_DIRECTORY . '/predefined-asset-metadata',
+            'legacyConfigFile' => 'predefined-asset-metadata.php',
+            'writeTargetEnvVariableName' => 'PIMCORE_WRITE_TARGET_PREDEFINED_ASSET_METADATA',
+        ]);
     }
 
     /**
-     * @param int|null $id
+     * @param string|null $id
      *
      * @throws \Exception
      */
@@ -41,12 +50,19 @@ class Dao extends Model\Dao\PhpArrayTable
             $this->model->setId($id);
         }
 
-        $data = $this->db->getById($this->model->getId());
+        $data = $this->getDataByName($this->model->getId());
 
-        if (isset($data['id'])) {
+        if($data && $id != null) {
+            $data['id'] = $id;
+        }
+
+        if($data) {
             $this->assignVariablesToModel($data);
         } else {
-            throw new \Exception('Predefined asset metadata with id: ' . $this->model->getId() . ' does not exist');
+            throw new Model\Exception\NotFoundException(sprintf(
+            'Predefined property with ID "%s" does not exist.',
+            $this->model->getId()
+            ));
         }
     }
 
@@ -58,20 +74,21 @@ class Dao extends Model\Dao\PhpArrayTable
      */
     public function getByNameAndLanguage($name = null, $language = null)
     {
-        $data = $this->db->fetchAll(function ($row) use ($name, $language) {
+        $list = new Listing();
+        $definitions = array_filter($list->getDefinitions(), function($item) use($name, $language) {
             $return = true;
-            if ($name && $row['name'] != $name) {
+            if ($name && $item->getName() != $name) {
                 $return = false;
             }
-            if ($language && $row['language'] != $language) {
+            if ($language && $item->getLanguage() != $language) {
                 $return = false;
             }
 
             return $return;
         });
 
-        if (count($data) && $data[0]['id']) {
-            $this->assignVariablesToModel($data[0]);
+        if (count($definitions)) {
+            $this->assignVariablesToModel(reset($definitions));
         } else {
             throw new Model\Exception\NotFoundException(sprintf('Predefined metadata config with name "%s" and language %s does not exist.', $name, $language));
         }
@@ -82,6 +99,10 @@ class Dao extends Model\Dao\PhpArrayTable
      */
     public function save()
     {
+        if (!$this->model->getId()) {
+            $id = $this->getNextId(Listing::class);
+            $this->model->setId($id);
+        }
         $ts = time();
         if (!$this->model->getCreationDate()) {
             $this->model->setCreationDate($ts);
@@ -90,7 +111,7 @@ class Dao extends Model\Dao\PhpArrayTable
 
         $dataRaw = $this->model->getObjectVars();
         $data = [];
-        $allowedProperties = ['id', 'name', 'description', 'group', 'language', 'type', 'data',
+        $allowedProperties = ['name', 'description', 'group', 'language', 'type', 'data',
             'targetSubtype', 'config', 'creationDate', 'modificationDate', ];
 
         foreach ($dataRaw as $key => $value) {
@@ -98,11 +119,7 @@ class Dao extends Model\Dao\PhpArrayTable
                 $data[$key] = $value;
             }
         }
-        $this->db->insertOrUpdate($data, $this->model->getId());
-
-        if (!$this->model->getId()) {
-            $this->model->setId($this->db->getLastInsertId());
-        }
+        $this->saveData($this->model->getId(), $data);
     }
 
     /**
@@ -110,6 +127,24 @@ class Dao extends Model\Dao\PhpArrayTable
      */
     public function delete()
     {
-        $this->db->delete($this->model->getId());
+        $this->deleteData($this->model->getId());
+    }
+
+    /**
+     * {@inheritdoc}
+     */
+    protected function prepareDataStructureForYaml(string $id, $data)
+    {
+        return [
+            'pimcore' => [
+                'metadata' => [
+                    'predefined' => [
+                        'definitions' => [
+                            $id => $data
+                        ]
+                    ]
+                ]
+            ]
+        ];
     }
 }
